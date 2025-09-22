@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base theme (dark) */
+:root { color-scheme: dark; }
+html, body { @apply bg-background text-foreground; }
+
+/* shadcn-like tokens */
+.ui-card { @apply bg-card border border-border rounded-2xl shadow-sm; }
+.ui-btn { @apply inline-flex items-center gap-2 rounded-xl px-4 py-2 bg-white/10 hover:bg-white/15 border border-border text-foreground; }
+.ui-input, .ui-textarea, .ui-select {
+  @apply w-full rounded-xl bg-muted/50 border border-border px-3 py-2 text-foreground placeholder:text-white/60;
+}
+.ui-label { @apply text-sm text-white/80; }
+.ui-sep { @apply border-t border-border; }
+.ui-badge { @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs bg-white/10 border border-border; }
+
+/* Better contrast for dark */
+input, textarea, select { color: #fafafa; }
+::placeholder { color: rgba(255,255,255,0.7); }
