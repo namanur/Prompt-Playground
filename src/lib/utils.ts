@@ -1,5 +1,5 @@
-import { type ClassValue } from "class-variance-authority";
-import { clsx } from "clsx";
+// src/lib/utils.ts
+import clsx, { type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
 export function cn(...inputs: ClassValue[]) {
