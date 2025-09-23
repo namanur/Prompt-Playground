@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { BASE_TEMPLATES, assemblePrompt, type Template } from '@/lib/prompt';
 import { PEOPLE_POSE_PRESETS } from '@/lib/presets';
 import { detectIntent } from '@/lib/intent';
@@ -9,7 +9,11 @@ import {
   validateWritingOutput,
   validateImageOutput,
 } from '@/lib/validate';
-import { Star, Search, ArrowUp } from 'lucide-react';
+import { 
+  Star, Search, ArrowUp, Copy, Download, History, 
+  Shuffle, Wand2, Save, Share2, Settings,
+  ChevronDown, ChevronUp, RefreshCw, Zap
+} from 'lucide-react';
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem
 } from '@/components/ui/select';
@@ -33,29 +37,32 @@ type PromptResult = {
   technical_params?: { steps?: number; cfg_scale?: number; sampler?: string };
 };
 
+type HistoryEntry = {
+  id: string;
+  timestamp: number;
+  template: Template;
+  values: Record<string, string>;
+  result: PromptResult;
+  settings: any;
+};
+
 export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) {
   const builderRef = useRef<HTMLDivElement>(null);
 
-  // tab mode
+  // Core state
   const [tab, setTab] = useState<keyof typeof BASE_TEMPLATES>(lockedTab ?? 'images');
   const isImage = (lockedTab ?? tab) === 'images';
 
-  // search + favorites
+  // Search and organization
   const [q, setQ] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [sortBy, setSortBy] = useState<'name' | 'recent' | 'popular'>('name');
+  const [filterTags, setFilterTags] = useState<string[]>([]);
 
-  const list = BASE_TEMPLATES[tab];
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    return list.filter(t =>
-      !s || (t.title + ' ' + (t.subtitle || '') + ' ' + t.tags.join(' ')).toLowerCase().includes(s)
-    );
-  }, [list, q]);
-
-  // builder
+  // Builder state
   const [builder, setBuilder] = useState<{ template?: Template; values: Record<string, string> }>({ values: {} });
 
-  // meta controls
+  // Enhanced controls
   const [quality, setQuality] = useState(7);
   const [seed, setSeed] = useState('auto');
   const [tone, setTone] = useState('professional');
@@ -66,21 +73,54 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
   const [format, setFormat] = useState('paragraph');
   const [aspect, setAspect] = useState('free');
 
-  // NEW: reference-face lock (no upload UI)
+  // Advanced features
   const [hasRefFace, setHasRefFace] = useState(false);
-
-  // POSE FIX: keep '' in state for "no pose", but never pass '' to <Select/>.
-  const NONE = 'NONE';
   const [pose, setPose] = useState<keyof typeof PEOPLE_POSE_PRESETS | ''>('');
 
-  // optimizer state
+  // Output and processing
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [optimized, setOptimized] = useState('');
   const [rich, setRich] = useState<PromptResult | null>(null);
   const [showDetails, setShowDetails] = useState(false);
 
-  // assembled prompt (FaceLock + Pose included)
+  // History and persistence
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [lastSaved, setLastSaved] = useState<number | null>(null);
+
+  const list = BASE_TEMPLATES[tab];
+  
+  // Enhanced filtering and sorting
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    let filtered = list.filter(t => {
+      const matchesSearch = !s || (t.title + ' ' + (t.subtitle || '') + ' ' + t.tags.join(' ')).toLowerCase().includes(s);
+      const matchesTags = filterTags.length === 0 || filterTags.some(tag => t.tags.includes(tag));
+      return matchesSearch && matchesTags;
+    });
+
+    switch (sortBy) {
+      case 'recent':
+        return filtered.reverse();
+      case 'popular':
+        return filtered.sort((a, b) => {
+          const aFav = favorites.includes(a.id) ? 1 : 0;
+          const bFav = favorites.includes(b.id) ? 1 : 0;
+          return bFav - aFav;
+        });
+      default:
+        return filtered.sort((a, b) => a.title.localeCompare(b.title));
+    }
+  }, [list, q, filterTags, sortBy, favorites]);
+
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    list.forEach(t => t.tags.forEach(tag => tags.add(tag)));
+    return Array.from(tags).sort();
+  }, [list]);
+
   const assembled = assemblePrompt({
     activeTab: tab,
     builder,
@@ -92,9 +132,58 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
     audience,
     industry,
     format,
-    hasAttachment: hasRefFace, // checkbox drives FaceLock text
+    hasAttachment: hasRefFace,
     extraPresetText: pose ? PEOPLE_POSE_PRESETS[pose] : ''
   });
+
+  // Auto-save effect
+  useEffect(() => {
+    if (builder.template && Object.keys(builder.values).length > 0) {
+      const timeoutId = setTimeout(() => {
+        try {
+          localStorage.setItem('prompt_playground_draft', JSON.stringify({
+            tab,
+            builder,
+            settings: { quality, seed, tone, complexity, length, audience, industry, format, aspect, hasRefFace, pose }
+          }));
+          setLastSaved(Date.now());
+        } catch (e) {
+          console.warn('Failed to save draft:', e);
+        }
+      }, 2000);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [builder, tab, quality, seed, tone, complexity, length, audience, industry, format, aspect, hasRefFace, pose]);
+
+  // Load draft on mount
+  useEffect(() => {
+    try {
+      const draft = localStorage.getItem('prompt_playground_draft');
+      if (draft) {
+        const parsed = JSON.parse(draft);
+        if (parsed.builder) {
+          setBuilder(parsed.builder);
+        }
+        if (parsed.settings) {
+          const s = parsed.settings;
+          setQuality(s.quality ?? 7);
+          setSeed(s.seed ?? 'auto');
+          setTone(s.tone ?? 'professional');
+          setComplexity(s.complexity ?? 'intermediate');
+          setLength(s.length ?? 'detailed');
+          setAudience(s.audience ?? 'general');
+          setIndustry(s.industry ?? 'general');
+          setFormat(s.format ?? 'paragraph');
+          setAspect(s.aspect ?? 'free');
+          setHasRefFace(s.hasRefFace ?? false);
+          setPose(s.pose ?? '');
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load draft:', e);
+    }
+  }, []);
 
   function onUse(t: Template) {
     setBuilder({ template: t, values: {} });
@@ -105,12 +194,50 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
     setFavorites(f => (f.includes(id) ? f.filter(x => x !== id) : [...f, id]));
   }
 
-  function qualityToTag(n: number) {
-    if (n >= 9) return '9/10';
-    if (n >= 8) return '8/10';
-    if (n >= 7) return '7/10';
-    if (n >= 6) return '6/10';
-    return `${Math.max(1, Math.min(10, n))}/10`;
+  function randomizeSettings() {
+    setQuality(Math.floor(Math.random() * 4) + 7);
+    setTone(['professional', 'casual', 'persuasive', 'friendly'][Math.floor(Math.random() * 4)]);
+    setComplexity(['basic', 'intermediate', 'advanced'][Math.floor(Math.random() * 3)]);
+    setLength(['concise', 'medium', 'detailed'][Math.floor(Math.random() * 3)]);
+  }
+
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      // Could show toast notification here
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }
+
+  function saveToHistory(result: PromptResult) {
+    const entry: HistoryEntry = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      template: builder.template!,
+      values: builder.values,
+      result,
+      settings: { quality, seed, tone, complexity, length, audience, industry, format, aspect }
+    };
+    
+    setHistory(prev => [entry, ...prev.slice(0, 49)]);
+  }
+
+  function loadFromHistory(entry: HistoryEntry) {
+    setBuilder({ template: entry.template, values: entry.values });
+    setOptimized(entry.result.final_prompt);
+    setRich(entry.result);
+    
+    const s = entry.settings;
+    setQuality(s.quality ?? 7);
+    setSeed(s.seed ?? 'auto');
+    setTone(s.tone ?? 'professional');
+    setComplexity(s.complexity ?? 'intermediate');
+    setLength(s.length ?? 'detailed');
+    setAudience(s.audience ?? 'general');
+    setIndustry(s.industry ?? 'general');
+    setFormat(s.format ?? 'paragraph');
+    setAspect(s.aspect ?? 'free');
   }
 
   async function optimize() {
@@ -119,7 +246,6 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
       return;
     }
 
-    // Intent detection (suggest switching page if unlocked)
     const intentSample = [
       builder.template?.title,
       builder.template?.subtitle,
@@ -127,6 +253,7 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
     ].join(' ');
     const intent = detectIntent(intentSample, hasRefFace);
     const intentTab = intent === 'image' ? 'images' : intent === 'writing' ? 'writing' : 'emails';
+    
     if (!lockedTab && intentTab !== tab) {
       const ok = window.confirm(`This looks like a ${intent} request. Switch to /studio/${intentTab}?`);
       if (ok) {
@@ -141,38 +268,51 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
     setRich(null);
 
     try {
-      const r = await fetch('/api/generate-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userIdea: assembled,
-          aspect,
-          quality: qualityToTag(quality),
-          seed: seed || 'auto',
-          mode: (lockedTab ?? tab)
-        })
-      });
-      const j = await r.json();
-      if (!r.ok || !j?.success) throw new Error(j?.error || 'Optimize failed');
-
-      const result: PromptResult = j.result;
-      setOptimized(result.final_prompt);
-      setRich(result);
-      setShowDetails(true);
-
-      const vErr =
-        isImage
-          ? validateImageOutput(result.final_prompt)
-          : tab === 'emails'
-            ? validateEmailOutput(result.final_prompt)
-            : validateWritingOutput(result.final_prompt);
-
-      if (vErr) setErr(vErr);
+      await handleRegularOptimize();
     } catch (e: any) {
       setErr(e?.message || 'Unexpected error');
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleRegularOptimize() {
+    const r = await fetch('/api/generate-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userIdea: assembled,
+        aspect,
+        quality: `${quality}/10`,
+        seed: seed || 'auto',
+        mode: (lockedTab ?? tab)
+      })
+    });
+    
+    const j = await r.json();
+    if (!r.ok || !j?.success) throw new Error(j?.error || 'Optimize failed');
+
+    const result: PromptResult = j.result;
+    setOptimized(result.final_prompt);
+    setRich(result);
+    setShowDetails(true);
+
+    const vErr = isImage
+      ? validateImageOutput(result.final_prompt)
+      : tab === 'emails'
+        ? validateEmailOutput(result.final_prompt)
+        : validateWritingOutput(result.final_prompt);
+
+    if (vErr) setErr(vErr);
+    else saveToHistory(result);
+  }
+
+  function qualityToTag(n: number) {
+    if (n >= 9) return '9/10';
+    if (n >= 8) return '8/10';
+    if (n >= 7) return '7/10';
+    if (n >= 6) return '6/10';
+    return `${Math.max(1, Math.min(10, n))}/10`;
   }
 
   function scoreBadgeColor(score?: number) {
@@ -183,11 +323,20 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
     return 'text-red-400 bg-red-400/10 border-red-400/20';
   }
 
+  const NONE = 'NONE';
+
   return (
     <div className="container py-10">
-      {/* Header with tabs */}
+      {/* Enhanced Header */}
       <div className="flex flex-col gap-4 items-center mb-8">
-        <h1 className="text-3xl font-semibold">Prompt Playground Studio</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold">Prompt Playground Studio</h1>
+          {lastSaved && (
+            <Badge className="text-xs opacity-70">
+              Saved {new Date(lastSaved).toLocaleTimeString()}
+            </Badge>
+          )}
+        </div>
 
         {!lockedTab && (
           <div className="flex gap-6 border-b border-white/10">
@@ -205,26 +354,112 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
           </div>
         )}
 
-        <div className="relative w-full max-w-lg">
-          <Search className="absolute left-3 top-3 text-white/50" size={18} />
-          <input
-            className="ui-input pl-9"
-            placeholder="Search templates… (images, writing, emails)"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-          />
+        {/* Enhanced Search and Filters */}
+        <div className="w-full max-w-4xl space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-3 text-white/50" size={18} />
+            <input
+              className="ui-input pl-9"
+              placeholder="Search templates..."
+              value={q}
+              onChange={e => setQ(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+              <SelectTrigger className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="name">A-Z</SelectItem>
+                <SelectItem value="recent">Recent</SelectItem>
+                <SelectItem value="popular">Popular</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {allTags.slice(0, 6).map(tag => (
+              <button
+                key={tag}
+                onClick={() => setFilterTags(prev => 
+                  prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+                )}
+                className={`px-2 py-1 rounded-full text-xs border transition-colors ${
+                  filterTags.includes(tag) 
+                    ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                    : 'border-white/20 hover:border-white/40'
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
+
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className="flex items-center gap-1 px-3 py-1 rounded-lg border border-white/20 hover:border-white/40 transition-colors"
+            >
+              <History size={14} />
+              History ({history.length})
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Template grid */}
+      {/* History Panel */}
+      {showHistory && (
+        <div className="ui-card p-4 mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium">Generation History</h3>
+            <button
+              onClick={() => setHistory([])}
+              className="text-xs text-white/60 hover:text-white/80"
+            >
+              Clear All
+            </button>
+          </div>
+          <div className="grid gap-2 max-h-64 overflow-y-auto">
+            {history.length === 0 ? (
+              <p className="text-white/60 text-sm">No history yet. Generate some prompts to see them here!</p>
+            ) : (
+              history.map(entry => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between p-3 rounded-lg border border-white/10 hover:border-white/20 cursor-pointer"
+                  onClick={() => loadFromHistory(entry)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{entry.template.title}</p>
+                    <p className="text-xs text-white/60">{new Date(entry.timestamp).toLocaleString()}</p>
+                  </div>
+                  <div className={`px-2 py-1 rounded text-xs ${scoreBadgeColor(entry.result.score)}`}>
+                    {entry.result.score}/100
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Template Grid */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {filtered.map(t => (
           <div
             key={t.id}
-            className="ui-card overflow-hidden group relative hover:shadow-lg transition-shadow"
+            className="ui-card overflow-hidden group relative hover:shadow-lg transition-all duration-300"
           >
-            <div className="w-full aspect-[4/3] overflow-hidden">
-              <img src={t.preview} alt={t.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+            <div className="w-full aspect-[4/3] overflow-hidden relative">
+              <img 
+                src={t.preview} 
+                alt={t.title} 
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+              />
+              {favorites.includes(t.id) && (
+                <Star 
+                  size={16} 
+                  className="absolute top-2 right-2 text-yellow-400 fill-yellow-400" 
+                />
+              )}
             </div>
             <div className="p-3 space-y-1">
               <p className="font-medium">{t.title}</p>
@@ -273,7 +508,7 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
                 </div>
               ))}
 
-              {/* Reference identity lock (no upload) */}
+              {/* Reference identity lock */}
               {isImage && (
                 <div className="ui-card p-3 space-y-3">
                   <label className="ui-label flex items-center gap-2">
@@ -287,7 +522,6 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
 
                   <div>
                     <label className="ui-label">Pose preset (optional)</label>
-                    {/* POSE FIX: never pass '' to Select; map '' <-> 'NONE' */}
                     <Select
                       value={pose || NONE}
                       onValueChange={(v) => setPose(v === NONE ? '' : (v as keyof typeof PEOPLE_POSE_PRESETS))}
@@ -455,7 +689,7 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
                 </div>
               </div>
 
-              {/* Action */}
+              {/* Action buttons */}
               <div className="flex items-center gap-3 pt-2">
                 <button
                   className="ui-btn"
@@ -465,6 +699,15 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
                   <ArrowUp className="mr-1" size={16} />
                   {loading ? 'Optimizing…' : 'Optimize'}
                 </button>
+                
+                <button
+                  className="ui-btn"
+                  onClick={randomizeSettings}
+                  title="Randomize settings"
+                >
+                  <Shuffle size={16} />
+                </button>
+
                 {err && <span className="text-red-400 text-sm">{err}</span>}
               </div>
             </div>
@@ -478,7 +721,19 @@ export default function StudioTabsClient({ lockedTab }: { lockedTab?: Locked }) 
                 readOnly
               />
 
-              <label className="ui-label">Optimized prompt</label>
+              <div className="flex items-center justify-between">
+                <label className="ui-label">Optimized prompt</label>
+                {optimized && (
+                  <button
+                    onClick={() => copyToClipboard(optimized)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs border border-white/20 rounded hover:border-white/40 transition-colors"
+                  >
+                    <Copy size={12} />
+                    Copy
+                  </button>
+                )}
+              </div>
+              
               <textarea
                 className="ui-textarea h-56"
                 value={optimized}
